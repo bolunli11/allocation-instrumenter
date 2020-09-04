@@ -141,8 +141,8 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.6.1</version>
         <configuration>
-          <source>1.7</source>
-          <target>1.7</target>
+          <source>8</source>
+          <target>8</target>
         </configuration>
       </plugin>
       <!-- configure eclipse project -->
@@ -356,6 +356,7 @@
           <archive>
             <manifestEntries>
               <Premain-Class>com.google.monitoring.runtime.instrumentation.AllocationInstrumenterBootstrap</Premain-Class>
+              <Agent-Class>com.google.monitoring.runtime.instrumentation.AllocationInstrumenter</Agent-Class>
               <Can-Redefine-Classes>true</Can-Redefine-Classes>
               <Can-Retransform-Classes>true</Can-Retransform-Classes>
               <Main-Class>NotSuitableAsMain</Main-Class>

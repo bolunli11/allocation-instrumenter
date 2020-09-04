@@ -29,6 +29,28 @@ import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
 
+import sun.misc.Unsafe;
+import java.lang.reflect.Field;
+import java.util.Collections;
+
+
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.MemoryPoolMXBean;
+import javax.management.NotificationEmitter;
+import javax.management.NotificationListener;
+import javax.management.Notification;
+import javax.management.NotificationFilter;
+import javax.management.ListenerNotFoundException;
+import com.sun.management.GarbageCollectionNotificationInfo;
+import javax.management.openmbean.CompositeData;
+import java.lang.management.ManagementFactory;
+import com.sun.management.GcInfo;
+//import com.sun.management.GarbageCollectorMXBean;
+import javax.management.NotificationBroadcaster;
+import javax.management.MBeanNotificationInfo;
+//import sun.management.GarbageCollectorImpl;
+//import sun.management.ManagementFactoryHelper;
+
 /**
  * Instruments bytecodes that allocate heap memory to call a recording hook. This will add a static
  * invocation to a recorder function to any bytecode that looks like it will be allocating heap
@@ -67,7 +89,154 @@ public class AllocationInstrumenter implements ClassFileTransformer {
   // No instantiating me except in premain() or in {@link JarClassTransformer}.
   AllocationInstrumenter() {}
 
+  
+  static final Unsafe unsafe = getUnsafe();
+  static final boolean is64bit = true;
+  static boolean flag = true;
+
+  public static String printAddresses(Object... objects) {
+        String tmp = "";
+        //System.out.print(label + ": 0x");
+        long last = 0;
+        int offset = unsafe.arrayBaseOffset(objects.getClass());
+        int scale = unsafe.arrayIndexScale(objects.getClass());
+        switch (scale) {
+            case 4:
+                long factor = is64bit ? 8 : 1;
+                final long i1 = (unsafe.getInt(objects, offset) & 0xFFFFFFFFL) * factor;
+                tmp = Long.toHexString(i1);
+                //System.out.println(Long.toHexString(i1));
+                last = i1;
+                for (int i = 1; i < objects.length; i++) {
+                    final long i2 = (unsafe.getInt(objects, offset + i * 4) & 0xFFFFFFFFL) * factor;
+                    if (i2 > last) {
+                        //System.out.print(", +" + Long.toHexString(i2 - last));
+                        tmp = tmp.concat(", +" + Long.toHexString(i2 - last));
+                    }
+                    else {
+                        //System.out.print(", -" + Long.toHexString(last - i2));
+                        tmp = tmp.concat(", -" + Long.toHexString(last - i2));
+                    }
+                    last = i2;
+                }
+                break;
+            case 8:
+                throw new AssertionError("Not supported");
+        }
+        return tmp;
+  }
+
+  private static Unsafe getUnsafe() {
+        try {
+            Field theUnsafe = Unsafe.class.getDeclaredField("theUnsafe");
+            theUnsafe.setAccessible(true);
+            return (Unsafe) theUnsafe.get(null);
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }  
+  }
+
+  public native void dataCentric(String addr, long size);
+  public native void clearTree();
+  public native void removeReclaimedObjectInSplayTree(String addr);
+  
+  @Override
+  protected void finalize() throws Throwable {
+      AllocationInstrumenter ai = new  AllocationInstrumenter();
+      String res = printAddresses(this);
+      ai.removeReclaimedObjectInSplayTree(res);
+      super.finalize();
+  }
+
+  public static void register_callback(String[] args)
+  {
+    AllocationInstrumenter ai = new  AllocationInstrumenter();
+
+    AllocationRecorder.addSampler(new Sampler() {
+        
+        public void sampleAllocation(int count, String desc, Object newObj, long size) {
+            if (flag == true) {
+              List<GarbageCollectorMXBean> gcbeans = java.lang.management.ManagementFactory.getGarbageCollectorMXBeans();
+              for (GarbageCollectorMXBean gcbean : gcbeans) {
+                NotificationEmitter emitter = (NotificationEmitter) gcbean;
+                //System.out.println(gcbean.getName());
+
+                NotificationListener listener = (notification, handback) -> {
+                  if (notification.getType().equals(GarbageCollectionNotificationInfo.GARBAGE_COLLECTION_NOTIFICATION)) {
+                      ai.clearTree();            
+                  }
+                };
+                emitter.addNotificationListener(listener, null, null);
+              }
+              flag = false;
+            }
+            if(size > 1024)
+            {
+                try
+                {
+                    String res = printAddresses(newObj);
+                    ai.dataCentric(res, size);
+                } catch(Exception e) {
+                    return;
+                }
+            }
+        }
+    });
+  }
+
+
+public static void agentmain(String agentArgs, Instrumentation inst) {
+
+	System.load(System.getenv("JXPerf_HOME") + "/build/libagent.so");
+
+    AllocationRecorder.setInstrumentation(inst);
+
+    // Force eager class loading here.  The instrumenter relies on these classes.  If we load them
+    // for the first time during instrumentation, the instrumenter will try to rewrite them.  But
+    // the instrumenter needs these classes to run, so it will try to load them during that rewrite
+    // pass.  This results in a ClassCircularityError.
+    try {
+      Class.forName("sun.security.provider.PolicyFile");
+      Class.forName("java.util.ResourceBundle");
+      Class.forName("java.util.Date");
+    } catch (Throwable t) {
+      // NOP
+    }
+
+    if (!inst.isRetransformClassesSupported()) {
+      System.err.println("Some JDK classes are already loaded and will not be instrumented.");
+    }
+
+    // Don't try to rewrite classes loaded by the bootstrap class
+    // loader if this class wasn't loaded by the bootstrap class
+    // loader.
+    if (AllocationRecorder.class.getClassLoader() != null) {
+      canRewriteBootstrap = false;
+      // The loggers aren't installed yet, so we use println.
+      System.err.println("Class loading breakage: Will not be able to instrument JDK classes");
+      return;
+    }
+
+    canRewriteBootstrap = true;
+    List<String> args = Arrays.asList(agentArgs == null ? new String[0] : agentArgs.split(","));
+
+    // When "subclassesAlso" is specified, samplers are also invoked when
+    // SubclassOfA.<init> is called while only class A is specified to be
+    // instrumented.
+    ConstructorInstrumenter.subclassesAlso = args.contains("subclassesAlso");
+    inst.addTransformer(new ConstructorInstrumenter(), inst.isRetransformClassesSupported());
+
+    if (!args.contains("manualOnly")) {
+      bootstrap(inst);
+    }
+  }
+
+
+
   public static void premain(String agentArgs, Instrumentation inst) {
+
+	System.load(System.getenv("JXPerf_HOME") + "/build/libagent.so");
+
     AllocationRecorder.setInstrumentation(inst);
 
     // Force eager class loading here.  The instrumenter relies on these classes.  If we load them
