@@ -28,6 +28,8 @@ import java.util.logging.Logger;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.*;
+import org.objectweb.asm.commons.AdviceAdapter;
 
 import sun.misc.Unsafe;
 import java.lang.reflect.Field;
@@ -233,10 +235,105 @@ public static void agentmain(String agentArgs, Instrumentation inst) {
 
 
 
+  // new added
+  private static class TimeClassFileTransformer implements ClassFileTransformer {
+        @Override
+        public byte[] transform(ClassLoader loader, String className, Class<?> classBeingRedefined, ProtectionDomain protectionDomain, byte[] classfileBuffer) {
+            // if (className.startsWith("java") || className.startsWith("jdk") || className.startsWith("javax") || className.startsWith("sun") || className.startsWith("com/sun")|| className.startsWith("com.google.monitoring.runtime.instrumentation")) {
+            //     //return null或者执行异常会执行原来的字节码
+            //     return null;
+            // }
+            // System.out.println("loaded class: " + className);
+            ClassReader reader = new ClassReader(classfileBuffer);
+            ClassWriter writer = new ClassWriter(reader, ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+            reader.accept(new TimeClassVisitor(writer), ClassReader.EXPAND_FRAMES);
+            // return writer.toByteArray();
+            return null;
+        }
+  }
+  public static class TimeClassVisitor extends ClassVisitor {
+        public TimeClassVisitor(ClassVisitor classVisitor) {
+            super(Opcodes.ASM5, classVisitor);
+        }
+        @Override
+        public MethodVisitor visitMethod(int methodAccess, String methodName, String methodDesc, String signature, String[] exceptions) {
+            MethodVisitor methodVisitor = cv.visitMethod(methodAccess, methodName, methodDesc, signature, exceptions);
+            return new TimeAdviceAdapter(Opcodes.ASM5, methodVisitor, methodAccess, methodName, methodDesc);
+        }
+  }
+  public static class TimeAdviceAdapter extends AdviceAdapter {
+        private String methodName;
+        protected TimeAdviceAdapter(int api, MethodVisitor methodVisitor, int methodAccess, String methodName, String methodDesc) {
+            super(api, methodVisitor, methodAccess, methodName, methodDesc);
+            this.methodName = methodName;
+        }
+        @Override
+        protected void onMethodEnter() {
+            //在方法入口处植入
+            if ("<init>".equals(methodName)|| "<clinit>".equals(methodName)) {
+                return;
+            }
+            mv.visitTypeInsn(NEW, "java/lang/StringBuilder");
+            mv.visitInsn(DUP);
+            mv.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+            mv.visitVarInsn(ALOAD, 0);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "getClass", "()Ljava/lang/Class;", false);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Class", "getName", "()Ljava/lang/String;", false);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+            mv.visitLdcInsn(".");
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+            mv.visitLdcInsn(methodName);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+            mv.visitMethodInsn(INVOKESTATIC, "com/google/monitoring/runtime/instrumentation/TimeHolder", "start", "(Ljava/lang/String;)V", false);
+            mv.visitMethodInsn(INVOKESTATIC, "org.deeplearning4j.nn.multilayer.MultiLayerNetwork", "operatorHook", "(Ljava/lang/String;)V", false);
+      }
+      @Override
+      protected void onMethodExit(int i) {
+            //在方法出口植入
+            if ("<init>".equals(methodName) || "<clinit>".equals(methodName)) {
+                return;
+            }
+            mv.visitTypeInsn(NEW, "java/lang/StringBuilder");
+            mv.visitInsn(DUP);
+            mv.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+            mv.visitVarInsn(ALOAD, 0);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "getClass", "()Ljava/lang/Class;", false);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Class", "getName", "()Ljava/lang/String;", false);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+            mv.visitLdcInsn(".");
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+            mv.visitLdcInsn(methodName);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+            mv.visitVarInsn(ASTORE, 1);
+            mv.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+            mv.visitTypeInsn(NEW, "java/lang/StringBuilder");
+            mv.visitInsn(DUP);
+            mv.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+            mv.visitVarInsn(ALOAD, 1);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+            mv.visitLdcInsn(": ");
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+            mv.visitVarInsn(ALOAD, 1);
+            mv.visitMethodInsn(INVOKESTATIC, "com/google/monitoring/runtime/instrumentation/TimeHolder", "cost", "(Ljava/lang/String;)J", false);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(J)Ljava/lang/StringBuilder;", false);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+    }
+  }
+
+  private static volatile Instrumentation instrumentation1 = null;
+
+
   public static void premain(String agentArgs, Instrumentation inst) {
 
 	System.load(System.getenv("JXPerf_HOME") + "/build/libagent.so");
 
+  instrumentation1 = inst;
+  instrumentation1.addTransformer(new TimeClassFileTransformer());
+
+
+    //ori code
     AllocationRecorder.setInstrumentation(inst);
 
     // Force eager class loading here.  The instrumenter relies on these classes.  If we load them
@@ -277,6 +374,8 @@ public static void agentmain(String agentArgs, Instrumentation inst) {
     if (!args.contains("manualOnly")) {
       bootstrap(inst);
     }
+
+
   }
 
   private static void bootstrap(Instrumentation inst) {
